@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PVSF: Passive Vortex Sediment Forebay Simulation</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background-color: #020617;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    #canvas-container { width: 100vw; height: 100vh; }
+    .hud {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      background: rgba(15, 23, 42, 0.88);
+      backdrop-filter: blur(8px);
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 20px;
+      color: #f8fafc;
+      width: 320px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+    }
+    h2 { margin: 0 0 10px 0; font-size: 16px; color: #38bdf8; }
+    .row { margin-bottom: 14px; }
+    label { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; color: #94a3b8; margin-bottom: 4px; }
+    .val { color: #38bdf8; font-weight: bold; }
+    input[type=range] { width: 100%; accent-color: #38bdf8; }
+    .card {
+      background: #0b1120;
+      border-radius: 6px;
+      padding: 12px;
+      margin-top: 14px;
+      font-size: 11px;
+      line-height: 1.6;
+      border-left: 3px solid #38bdf8;
+    }
+    .legend {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      background: rgba(15, 23, 42, 0.88);
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 12px;
+      color: #e2e8f0;
+    }
+    .item { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .dot.blue { background: #38bdf8; }
+    .dot.amber { background: #f59e0b; }
+    .dot.green { background: #22c55e; }
+  </style>
+</head>
+<body>
+<div id="canvas-container"></div>
+
+<div class="hud">
+  <h2>PVSF Hydrodynamic Separator</h2>
+  
+  <div class="row">
+    <label>Inflow Discharge (Q): <span class="val" id="q-label">45 m³/s</span></label>
+    <input type="range" id="q-slider" min="10" max="75" value="45" oninput="updateFlow(this.value)">
+  </div>
+
+  <div class="row">
+    <label>Helical Boundary Rifling: <span class="val" id="helix-label">18° Scalloped</span></label>
+    <input type="range" id="helix-slider" min="10" max="30" value="18" oninput="updateHelix(this.value)">
+  </div>
+
+  <div class="card">
+    <div><strong>Vortex Tangential Velocity (v<sub>&theta;</sub>):</strong> <span id="v-theta">3.8 m/s</span></div>
+    <div><strong>Critical Cut-off Size (d<sub>50</sub>):</strong> <span id="d50-val">112 &mu;m</span></div>
+    <div><strong>Coarse Bedload Capture (&eta;<sub>v</sub>):</strong> <span id="eff-val" style="color:#22c55e;">78.4%</span></div>
+  </div>
+
+  <div style="font-size: 10px; color: #64748b; margin-top: 10px;">
+    *Fluid enters tangentially, setting up forced-to-free vortex kinematics. Floor shear decelerates bed swirl, triggering inward Ekman transport that deposits bedload into the central sump.
+  </div>
+</div>
+
+<div class="legend">
+  <div class="item"><div class="dot blue"></div> Tangential Streamlines (Clarified Decant)</div>
+  <div class="item"><div class="dot amber"></div> Coarse Bedload Trajectories (d &gt; d<sub>50</sub>)</div>
+  <div class="item"><div class="dot green"></div> Central Sump & Scour Underflow Orifice</div>
+</div>
+
+<script>
+  let scene, camera, renderer, controls;
+  let particles, particleGeom;
+  const count = 1200;
+  let pData = [];
+  let flowQ = 45;
+  let helixPitch = 18;
+
+  function init() {
+    const container = document.getElementById('canvas-container');
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color('#020617');
+
+    camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, 9, 11);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    container.appendChild(renderer.domElement);
+
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.maxPolarAngle = Math.PI / 2.1;
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    const dLight = new THREE.DirectionalLight(0x38bdf8, 1.2);
+    dLight.position.set(5, 10, 7);
+    scene.add(dLight);
+
+    // Build Transparent Vortex Chamber
+    const coneGeom = new THREE.CylinderGeometry(4.0, 1.2, 5.0, 32, 1, true);
+    const coneMat = new THREE.MeshStandardMaterial({
+      color: 0x0284c7,
+      transparent: true,
+      opacity: 0.25,
+      side: THREE.DoubleSide,
+      wireframe: false
+    });
+    const chamber = new THREE.Mesh(coneGeom, coneMat);
+    chamber.position.y = 1.0;
+    scene.add(chamber);
+
+    // Helical Ribs along Wall
+    const helixPoints = [];
+    for (let t = 0; t < Math.PI * 8; t += 0.1) {
+      const rad = 4.0 - (t / (Math.PI * 8)) * 2.8;
+      const y = 3.5 - (t / (Math.PI * 8)) * 5.0;
+      helixPoints.push(new THREE.Vector3(Math.cos(t) * rad, y, Math.sin(t) * rad));
+    }
+    const helixGeom = new THREE.BufferGeometry().setFromPoints(helixPoints);
+    const helixMat = new THREE.LineBasicMaterial({ color: 0x0ea5e9, linewidth: 2 });
+    scene.add(new THREE.Line(helixGeom, helixMat));
+
+    // Central Sediment Sump
+    const sumpGeom = new THREE.CylinderGeometry(1.2, 1.2, 1.8, 32);
+    const sumpMat = new THREE.MeshStandardMaterial({ color: 0x166534, transparent: true, opacity: 0.6 });
+    const sump = new THREE.Mesh(sumpGeom, sumpMat);
+    sump.position.y = -2.4;
+    scene.add(sump);
+
+    // Tangential Inflow Channel
+    const inGeom = new THREE.BoxGeometry(4.0, 0.8, 1.0);
+    const inMat = new THREE.MeshStandardMaterial({ color: 0x334155, transparent: true, opacity: 0.7 });
+    const inlet = new THREE.Mesh(inGeom, inMat);
+    inlet.position.set(-3.2, 3.1, 3.6);
+    inlet.rotation.y = Math.PI / 10;
+    scene.add(inlet);
+
+    // Particle Transport Dynamics
+    particleGeom = new THREE.BufferGeometry();
+    const positions = new Float32Array(count * 3);
+    const colors = new Float32Array(count * 3);
+
+    for (let i = 0; i < count; i++) {
+      const isCoarse = i % 3 !== 0;
+      pData.push({
+        angle: Math.random() * Math.PI * 2,
+        r: 1.2 + Math.random() * 2.7,
+        y: 1.0 + Math.random() * 2.5,
+        speed: 0.02 + Math.random() * 0.03,
+        isCoarse: isCoarse
+      });
+      positions[i * 3] = 0;
+      positions[i * 3 + 1] = 0;
+      positions[i * 3 + 2] = 0;
+
+      // Color coding: Blue for clarified fine fluid, Amber for coarse bedload
+      if (isCoarse) {
+        colors[i * 3] = 0.96; colors[i * 3 + 1] = 0.62; colors[i * 3 + 2] = 0.04;
+      } else {
+        colors[i * 3] = 0.22; colors[i * 3 + 1] = 0.74; colors[i * 3 + 2] = 0.97;
+      }
+    }
+
+    particleGeom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    particleGeom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    const pMat = new THREE.PointsMaterial({ size: 0.12, vertexColors: true });
+    particles = new THREE.Points(particleGeom, pMat);
+    scene.add(particles);
+
+    updatePhysics();
+    window.addEventListener('resize', onResize);
+    animate();
+  }
+
+  function updateFlow(val) {
+    flowQ = parseFloat(val);
+    document.getElementById('q-label').innerText = flowQ + ' m³/s';
+    updatePhysics();
+  }
+
+  function updateHelix(val) {
+    helixPitch = parseFloat(val);
+    document.getElementById('helix-label').innerText = helixPitch + '° Scalloped';
+    updatePhysics();
+  }
+
+  function updatePhysics() {
+    const vTheta = (flowQ / 12.0).toFixed(1);
+    const d50 = Math.round(180 / Math.sqrt(vTheta * 0.8));
+    const eff = Math.min(94, (65 + (flowQ / 75.0) * 22)).toFixed(1);
+
+    document.getElementById('v-theta').innerText = vTheta + ' m/s';
+    document.getElementById('d50-val').innerText = d50 + ' μm';
+    document.getElementById('eff-val').innerText = eff + '%';
+  }
+
+  function onResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+
+    const pos = particleGeom.attributes.position.array;
+    const vFactor = flowQ / 45.0;
+
+    for (let i = 0; i < count; i++) {
+      const p = pData[i];
+      p.angle += p.speed * vFactor;
+
+      if (p.isCoarse) {
+        // Coarse bedload spirals down into central sump via secondary Ekman flow
+        p.r -= 0.006 * vFactor;
+        p.y -= 0.012 * vFactor;
+        if (p.y < -2.2 || p.r < 0.2) {
+          p.y = 3.2;
+          p.r = 3.5 + Math.random() * 0.4;
+        }
+      } else {
+        // Clarified fines circulate and exit out top decant
+        p.y += 0.003 * vFactor;
+        if (p.y > 3.4) {
+          p.y = 1.0;
+          p.r = 1.5 + Math.random() * 1.5;
+        }
+      }
+
+      pos[i * 3] = Math.cos(p.angle) * p.r;
+      pos[i * 3 + 1] = p.y;
+      pos[i * 3 + 2] = Math.sin(p.angle) * p.r;
+    }
+
+    particleGeom.attributes.position.needsUpdate = true;
+    controls.update();
+    renderer.render(scene, camera);
+  }
+
+  window.onload = init;
+</script>
+</body>
+</html>

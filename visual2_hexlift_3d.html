@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AWRS-HexLift: 3D Modular Tilt Mechanism</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background-color: #020617;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    #canvas-container {
+      width: 100vw;
+      height: 100vh;
+    }
+    .hud-panel {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(8px);
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 20px;
+      color: #f8fafc;
+      width: 320px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+    }
+    h2 {
+      margin: 0 0 10px 0;
+      font-size: 16px;
+      color: #38bdf8;
+    }
+    .control-row {
+      margin-bottom: 14px;
+    }
+    label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      font-weight: 600;
+      color: #94a3b8;
+      margin-bottom: 4px;
+    }
+    .val-tag {
+      color: #38bdf8;
+    }
+    input[type=range] {
+      width: 100%;
+      accent-color: #38bdf8;
+    }
+    .stress-card {
+      background: #0b1120;
+      border-radius: 6px;
+      padding: 10px;
+      margin-top: 14px;
+      font-size: 11px;
+      line-height: 1.6;
+      border-left: 3px solid #38bdf8;
+    }
+    .status-alert {
+      color: #22c55e;
+      font-weight: bold;
+    }
+    .status-alert.fail {
+      color: #ef4444;
+    }
+    .legend {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 12px;
+      color: #e2e8f0;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+    }
+    .dot.active { background: #0284c7; }
+    .dot.fixed { background: #475569; }
+    .dot.silt { background: #b45309; }
+  </style>
+</head>
+<body>
+
+<div id="canvas-container"></div>
+
+<div class="hud-panel">
+  <h2>HexLift Kinematic Controller</h2>
+  
+  <div class="control-row">
+    <label>Tilt Angle (&theta;): <span class="val-tag" id="deg-label">45&deg;</span></label>
+    <input type="range" id="tilt-slider" min="0" max="60" value="45" oninput="updateTilt(this.value)">
+  </div>
+
+  <div class="control-row">
+    <label>Silt Layer Thickness: <span class="val-tag" id="thick-label">15 mm</span></label>
+    <input type="range" id="thick-slider" min="5" max="35" value="15" oninput="updateThickness(this.value)">
+  </div>
+
+  <div class="stress-card">
+    <div><strong>Driving Shear (&tau;<sub>grav</sub>):</strong> <span id="tau-grav">145.7</span> Pa</div>
+    <div><strong>Resisting Strength (&tau;<sub>res</sub>):</strong> <span id="tau-res">84.1</span> Pa</div>
+    <div><strong>Factor of Safety (FS):</strong> <span id="fs-val" class="status-alert fail">0.58 (Scour Active)</span></div>
+  </div>
+  
+  <div style="font-size: 10px; color: #64748b; margin-top: 10px;">
+    *Alternating 50% active cassettes rotate around captive hinges. At &theta; &gt; 30&deg; (&phi; internal angle of repose), FS drops below 1.0, triggering spontaneous gravitational slumping.
+  </div>
+</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="dot active"></div> Active Tilting Cassette (6061-T6)</div>
+  <div class="legend-item"><div class="dot fixed"></div> Fixed Foundation Module</div>
+  <div class="legend-item"><div class="dot silt"></div> Saturated Silt Blanket</div>
+</div>
+
+<script>
+  let scene, camera, renderer, controls;
+  const activeModules = [];
+  const siltMeshes = [];
+
+  function createHexPrismGeometry(radius, height) {
+    const shape = new THREE.Shape();
+    for (let i = 0; i < 6; i++) {
+      const angle = (i * Math.PI) / 3;
+      const x = radius * Math.cos(angle);
+      const y = radius * Math.sin(angle);
+      if (i === 0) shape.moveTo(x, y);
+      else shape.lineTo(x, y);
+    }
+    shape.closePath();
+    const extrudeSettings = { depth: height, bevelEnabled: true, bevelSegments: 2, steps: 1, bevelSize: 0.04, bevelThickness: 0.04 };
+    const geom = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+    geom.rotateX(Math.PI / 2);
+    return geom;
+  }
+
+  function init() {
+    const container = document.getElementById('canvas-container');
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color('#020617');
+
+    camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, 7, 9);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    container.appendChild(renderer.domElement);
+
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.maxPolarAngle = Math.PI / 2.1;
+
+    // Lights
+    const ambLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambLight);
+
+    const dirLight = new THREE.DirectionalLight(0x38bdf8, 1.2);
+    dirLight.position.set(5, 12, 7);
+    dirLight.castShadow = true;
+    scene.add(dirLight);
+
+    // Grid Parameters
+    const hexRadius = 1.0;
+    const hexHeight = 0.25;
+    const rows = 4;
+    const cols = 5;
+
+    const baseHexGeom = createHexPrismGeometry(hexRadius, hexHeight);
+    const activeMat = new THREE.MeshStandardMaterial({ color: 0x0284c7, metalness: 0.8, roughness: 0.2 });
+    const fixedMat = new THREE.MeshStandardMaterial({ color: 0x334155, metalness: 0.2, roughness: 0.8 });
+    const siltMat = new THREE.MeshStandardMaterial({ color: 0xb45309, roughness: 0.9 });
+
+    let count = 0;
+    const xOffset = Math.sqrt(3) * hexRadius;
+    const zOffset = 1.5 * hexRadius;
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const x = (c - cols / 2) * xOffset + (r % 2 === 1 ? xOffset / 2 : 0);
+        const z = (r - rows / 2) * zOffset;
+        const isActive = (count % 2 === 0);
+
+        if (isActive) {
+          // Hinge pivot group
+          const pivotGroup = new THREE.Group();
+          pivotGroup.position.set(x, 0, z - hexRadius * 0.85); // Hinge located along one edge
+
+          const cassette = new THREE.Mesh(baseHexGeom, activeMat);
+          cassette.position.set(0, 0, hexRadius * 0.85);
+          cassette.castShadow = true;
+          cassette.receiveShadow = true;
+
+          // Silt Layer on top of cassette
+          const siltGeom = createHexPrismGeometry(hexRadius * 0.92, 0.08);
+          const silt = new THREE.Mesh(siltGeom, siltMat);
+          silt.position.set(0, hexHeight + 0.02, hexRadius * 0.85);
+          
+          pivotGroup.add(cassette);
+          pivotGroup.add(silt);
+          scene.add(pivotGroup);
+
+          activeModules.push(pivotGroup);
+          siltMeshes.push(silt);
+        } else {
+          // Fixed cassette
+          const cassette = new THREE.Mesh(baseHexGeom, fixedMat);
+          cassette.position.set(x, 0, z);
+          cassette.receiveShadow = true;
+          scene.add(cassette);
+        }
+        count++;
+      }
+    }
+
+    // Sub-floor drainage trough representation
+    const floorGeom = new THREE.PlaneGeometry(12, 10);
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.95 });
+    const subFloor = new THREE.Mesh(floorGeom, floorMat);
+    subFloor.rotation.x = -Math.PI / 2;
+    subFloor.position.y = -0.35;
+    subFloor.receiveShadow = true;
+    scene.add(subFloor);
+
+    updateTilt(45);
+    window.addEventListener('resize', onWindowResize);
+    animate();
+  }
+
+  function updateTilt(val) {
+    document.getElementById('deg-label').innerText = val + '°';
+    const rad = (val * Math.PI) / 180;
+
+    activeModules.forEach(mod => {
+      mod.rotation.x = -rad;
+    });
+
+    // Stress calculations
+    const h = parseFloat(document.getElementById('thick-slider').value) / 1000.0;
+    const rho = 1400.0;
+    const g = 9.81;
+    const phi = (30.0 * Math.PI) / 180.0;
+
+    const tauGrav = rho * g * h * Math.sin(rad);
+    const tauRes = rho * g * h * Math.cos(rad) * Math.tan(phi);
+    const fs = tauGrav > 0 ? (tauRes / tauGrav) : 999;
+
+    document.getElementById('tau-grav').innerText = tauGrav.toFixed(1);
+    document.getElementById('tau-res').innerText = tauRes.toFixed(1);
+
+    const fsLabel = document.getElementById('fs-val');
+    if (fs < 1.0) {
+      fsLabel.className = 'status-alert fail';
+      fsLabel.innerText = `${fs.toFixed(2)} (Scour Active: Silt Liquefaction)`;
+      // Hide or slide silt slightly to mimic slumping
+      siltMeshes.forEach(s => s.position.z = 0.85 * (1 + (val / 60) * 0.4));
+    } else {
+      fsLabel.className = 'status-alert';
+      fsLabel.innerText = `${fs.toFixed(2)} (Stable Sediment Matrix)`;
+      siltMeshes.forEach(s => s.position.z = 0.85);
+    }
+  }
+
+  function updateThickness(val) {
+    document.getElementById('thick-label').innerText = val + ' mm';
+    const scaleY = val / 15.0;
+    siltMeshes.forEach(s => s.scale.set(1, scaleY, 1));
+    updateTilt(document.getElementById('tilt-slider').value);
+  }
+
+  function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+
+  window.onload = init;
+</script>
+</body>
+</html>
