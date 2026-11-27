@@ -14,7 +14,7 @@ AWRS-HexLift resolves the fundamental failure mode of Managed Aquifer Recharge (
 ### The Three-Stage Architecture
 1. **Upstream Separation:** Passive Vortex Sediment Forebay (PVSF) with helical boundary-layer circulation to centrifugally eject coarse bedload (>70% exclusion).
 2. **Intake Throttling:** Dynamic Critical Shear-Permeability (CSP) gating calibrated to the critical Shields threshold, admitting water while throttling hyper-turbid fine sediment pulses.
-3. **Infiltration Bed Regeneration:** Tessellated hexagonal cassettes (HexLift) that tilt to 45° via buoyancy assistance to trigger Mohr-Coulomb limit-equilibrium liquefaction and flush settled silt cakes.
+3. **Infiltration Bed Regeneration:** Tessellated hexagonal cassettes (HexLift) that tilt to 28°–35° (32° design operating angle) via buoyancy assistance to trigger Mohr-Coulomb limit-equilibrium liquefaction and flush settled silt cakes.
 ### Prerequisites
 - Python 3.9+
 - NumPy, Matplotlib
